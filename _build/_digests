@@ -1,0 +1,4 @@
+"Rule: ocaml: ml -> cmo & cmi (%=lisp_interp )": "\025\189Z\029\218\148\016M8o\205\171\188\244D\003"
+"Resource: /home/steve/ocaml/interp/lisp_interp.ml": "\017\212\221N\191\224\186[\137\194\020\217\164\133\188\005"
+"Rule: ocaml: cmo* -> byte (%=lisp_interp )": "\019\221\014\157\210\219\128\164=\245)\139\253\031\025."
+"Rule: ocaml dependencies ml (%=lisp_interp )": "\rk\016\1381 \166\\z\249\028\195\180'l;"

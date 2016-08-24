@@ -1,0 +1,368 @@
+exception ParseError of string
+exception EvalError of string
+
+type expr =
+  | Var of string
+  | Int of int
+  | Bool of bool (* true | false *)
+  | Str of string
+  | Lst of expr list
+  | Car of expr
+  | Cdr of expr
+  | Eq of expr list (* (= e1 e2 ... en) *)
+  | Add of expr list (* (+ e1 e2 ... en) *)
+  | Mult of expr list 
+  | Sub of expr list (* (- e1 e2 ... en) *)
+  | Div of expr list (* (/ e1 e2 ... en) *)
+  | If of expr * expr * expr (* (if e1 e2 e3) *)
+  | Let of (string * expr) list * expr list (* (let ((v1 b1) (v2 b2) ... (vn bn))
+					     *      (e1) (e2) ... (em)) *)
+  | Fnc of string * expr list
+  | Defun of string * string list * expr list
+  | Nil
+
+(* open a file and read its tokens into a string list *)
+let prg = let open Sys in
+	  let open Array in
+	  let filename = (List.hd (List.tl (Array.to_list Sys.argv))) in
+	  let whitespace = Str.regexp "[ \t\n\r]+" in
+	  let delims = Str.regexp "[ \t\n\r]+\\|[()]\\|\"" in
+	  let open Core.Std.In_channel in
+	  let lines = read_lines filename in
+	  List.map (* just need the text from the split_result options *)
+	    (fun (x: Str.split_result) ->
+	     match x with
+	     | Str.Delim(t) -> t
+	     | Str.Text(t) -> t)
+	    (List.filter (* filter out the whitespace delimiters *)
+	       (fun (x : Str.split_result) ->
+		match x with
+		| Str.Delim(t) -> not (Str.string_match whitespace t 0)
+		| _ -> true)
+	       (List.fold_left (* read over lines and join tokens into one list *)
+		  (fun a x -> a @ (Str.full_split delims x)) [] lines))
+
+let int_regexp = Str.regexp "-?[0-9]+" (* match any integer *)
+let var_regexp = Str.regexp "[A-Za-z_-]+" (* match a valid var or defun name *)
+let bool_regexp = Str.regexp "\\(true\\)\\|\\(false\\)" (* match a bool *)
+
+let is_int x = Str.string_match int_regexp x 0
+let is_var x = Str.string_match var_regexp x 0
+let is_bool x = Str.string_match bool_regexp x 0
+
+let rec find_defuns prog =
+  match prog with
+  | t1::t2::tokens ->
+     if (t1 = "defun" && is_var t2)
+     then t2::(find_defuns tokens)
+     else find_defuns (t2::tokens)
+  | t::[] -> []
+  | [] -> []
+	    
+let defuns = find_defuns prg (* scan the expressions before parsing to find
+			      * the keywords that should be treated  as
+			      * function calls *)
+
+let is_fnc x = List.exists (fun a -> a = x) defuns
+
+(* begin output functions for printing the abstract syntax tree *)
+let rec indent d =
+  if (d > 0) then (print_string "|----"; indent (d-1))
+  else ()
+
+let rec print_list l =
+  match l with
+  | x::xs -> print_string (x ^ " "); print_list xs
+  | [] -> print_endline ""
+
+let rec print_expr depth expr =
+  indent depth;
+  match expr with
+  | Var (s) -> print_endline ("Var(" ^ s ^ ")")
+  | Int (i) -> print_endline ("Int(" ^ (string_of_int i) ^ ")")
+  | Bool (b) -> print_endline ("Bool(" ^ string_of_bool b ^ ")")
+  | Str (s) -> print_endline ("Str(\"" ^ s ^ "\")")
+  | Lst (el) -> print_endline "LST";
+		print_expr_lst (depth+1) el
+  | Car (e) -> print_endline "(car)";
+	       print_expr (depth+1) e
+  | Cdr (e) -> print_endline "(cdr)";
+	       print_expr (depth+1) e
+  | Nil -> print_endline ("(Nil)")
+  | Eq (el) -> print_endline "(=)";
+	       print_expr_lst (depth+1) el
+  | Add (el) -> print_endline "(+)";
+		print_expr_lst (depth+1) el
+  | Sub (el) -> print_endline "(-)";
+		print_expr_lst (depth+1) el
+  | Mult (el) -> print_endline "(*)";
+		 print_expr_lst (depth+1) el
+  | Div (el) ->  print_endline "(/)";
+		 print_expr_lst (depth+1) el
+  | If (e1, e2, e3) -> print_endline "(if)";
+		       print_expr (depth+1) e1;
+		       print_expr (depth+1) e2;
+		       print_expr (depth+1) e3
+  | Let (bl, el) -> print_endline "(let)";
+		    print_bindings (depth+1) bl;
+		    print_expr_lst (depth+1) el
+  | Fnc (name, el) -> print_endline ("(" ^ name ^ ")");
+		      print_expr_lst (depth+1) el
+  | Defun (name, params, el) -> print_endline "(defun)";
+				indent (depth+1); print_endline name;
+				indent (depth+1); print_list params;
+				print_expr_lst (depth+1) el
+
+and print_expr_lst d el =
+  match el with
+  | x::xs -> print_expr d x; print_expr_lst d xs
+  | [] -> ()
+
+and print_bindings d b =
+  match b with
+  | (v,e)::bs -> indent d;
+		 print_endline (v ^ " <---");
+		 print_expr (d+1) e;
+		 print_bindings d bs
+  | [] -> ()
+(* end output functions *)
+
+
+(* returns the list of tokens balanced between ( and matching )
+ * along with a list of remaining tokens...
+ * match_paren on '(+ 2 (- 3 4) ) (/ 3 4 5)' will return the 2-tuple:
+ * [+ 2 ( - 3 4 )],[( / 3 4 5 )]
+ *)
+let match_paren prog =
+  (* j is the measure of balance ... if we see ')', inc balance
+   * if we see '(' and dec balance; if balance is 0, return (seen, unseen)
+   * ... make sure not to return nothing on the first call to helper *)
+  let rec helper first seen unseen j =
+    if ((j = 0) && (not first))
+    then (List.tl (List.rev (List.tl seen)), unseen)
+    else match unseen with
+	 | x::xs -> if (x = ")") then helper false (x::seen) xs (j+1)
+		    else if (x = "(") then helper false (x::seen) xs (j-1)
+		    else helper false (x::seen) xs j
+	 | [] -> raise (ParseError("Paren mismatch"))
+  in
+  helper true [] prog 0
+
+let match_quote prog =
+  let rec helper seen unseen =
+    match unseen with
+    | x::xs -> if (x = "\"") then (seen, xs)
+	       else if (seen = "") then helper x xs
+	       else helper (seen ^ " " ^ x) xs
+    | [] -> raise (ParseError("Quote mismatch"))
+  in
+  helper "" prog
+
+(* match and build a single node in the AST *)	 
+let rec build_expr prog =
+  match prog with
+  | x::xs ->
+     if x = "("
+     then (match match_paren (x::xs) with
+	   | (grp, []) -> build_expr grp
+	   | _ -> raise (ParseError("Disjointed expressions")))
+     else if x = "\""
+     then (match match_quote (xs) with
+	   | (s, []) -> Str (s)
+	   | _ -> raise (ParseError("Disjointed expressions")))
+     else if x = "=" then Eq (build_expr_lst xs)
+     else if x = "+" then Add (build_expr_lst xs)
+     else if x = "*" then Mult (build_expr_lst xs)
+     else if x = "-" then Sub (build_expr_lst xs)
+     else if x = "/" then Div (build_expr_lst xs)
+     else if x = "list" then Lst (build_expr_lst xs)
+     else if x = "car" then Car (build_expr xs)
+     else if x = "cdr" then Cdr (build_expr xs)
+     else if x = "let" then build_let_expr xs
+     else if x = "if" then build_if_expr xs
+     else if is_bool x then Bool (bool_of_string x)
+     else if x = "defun" then build_defun_expr xs
+     else if is_fnc x then Fnc (x, build_expr_lst xs) (* match defun first! *)
+     else if is_int x then Int (int_of_string x)
+     else if is_var x then Var (x)
+     else raise (ParseError("Unrecognized input: " ^ x))
+  | [] -> Nil
+
+(* build a list of nodes *)
+and build_expr_lst prog =
+  match prog with
+  | x::xs ->
+     if x = "("
+     then (match match_paren (x::xs) with
+	   | (grp, rem) -> (build_expr grp)::(build_expr_lst rem))
+     else if x = "\""
+     then (match match_quote (xs) with
+	   | (s, rem) -> (Str (s))::(build_expr_lst rem))
+     else if is_int x
+     then (Int (int_of_string x))::(build_expr_lst xs)
+     else if is_bool x
+     then (Bool (bool_of_string x))::(build_expr_lst xs)
+     else if is_var x
+     then (Var (x))::(build_expr_lst xs)
+     else raise (ParseError(x))
+  | [] -> []
+
+(* (defun fun_name (par1 par2 ... parn)
+ *  (expr1)
+ *  (expr2)
+ *  ...
+ *  (exprm))
+ *)
+and build_defun_expr prog =
+  match prog with
+  | x::xs -> if is_var x
+	     then (match match_paren xs with
+		   | (params, []) -> raise (ParseError("Empty function: " ^ x))
+		   | (params, exprs) -> Defun (x, params, build_expr_lst exprs))
+	     else raise (ParseError("Invalid function name: " ^ x))
+  | [] -> raise (ParseError("Missing function"))
+
+and build_if_expr prog =
+  match build_expr_lst prog with
+  | e1::e2::e3::[] -> If (e1, e2, e3)
+  | _ -> raise (ParseError("Invalid If"))
+
+
+(* (let ((var1 expr1)
+ *       (var2 expr2)
+ *       ...
+ *       (varm exprm))
+ *      form1
+ *      form2
+ *      ...
+ *      formn)
+ *)
+
+and build_let_expr prog =
+  match match_paren prog with
+  | (bindings, exprs) ->
+     Let (build_bindings bindings, build_expr_lst exprs)
+
+and build_bindings bindings =
+  if (List.length bindings = 0) then [] else
+    match match_paren bindings with
+    | (b, bs) -> (build_bind b)::(build_bindings bs)
+	    
+and build_bind b =
+  match b with
+  | x::[] -> raise (ParseError("Incomplete binding"))
+  | x::xs -> if is_var x
+	     then (x, build_expr xs)
+	     else raise (ParseError("Invalid variable name: " ^ x))
+  | [] -> raise (ParseError("Missing binding"))
+
+let rec eval_expr e ns ds =
+  match e with
+  | Int (i) -> Int (i)
+  | Bool (b) -> Bool (b)
+  | Str (s) -> Str (s)
+  | Var (v) -> eval_expr (var_lookup v ns) ns ds
+  | Lst (es) -> Lst (eval_expr_lst es ns ds)
+  | Car (l) -> eval_car_expr l
+  | Cdr (l) -> eval_cdr_expr l
+  | Add (es) -> eval_arith_expr (fun x y -> x + y) 0 (eval_expr_lst es ns ds)
+  | Mult (es) -> eval_arith_expr (fun x y -> x * y) 1 (eval_expr_lst es ns ds)
+  | Sub (es) -> let eel = (eval_expr_lst es ns ds) in
+		eval_arith_expr (fun x y -> x - y)
+				(arith_start_val eel)
+				(List.tl eel)
+  | Div (es) -> let eel = (eval_expr_lst es ns ds) in
+		eval_arith_expr (fun x y -> x / y)
+				(arith_start_val eel)
+				(List.tl eel)
+  | Eq (es) -> let eel = (eval_expr_lst es ns ds) in
+	       Bool (List.for_all (fun x -> x = List.hd eel) eel)
+  | Let (bindings, es) -> List.hd (List.rev (eval_expr_lst es (bindings::ns) ds))
+  | If (e1, e2, e3) -> eval_if_expr e1 e2 e3 ns ds
+  | Fnc (name, args) -> eval_expr (let_from_fnc name
+						(eval_expr_lst args ns ds)
+						ns ds) ns ds
+  | _ -> raise (EvalError("Not implemented yet"))
+
+and let_from_fnc fn_name args ns ds =
+  let rec lookup_defun fn_name ds =
+    match ds with
+    | (Defun (n, params, exprs))::dxs -> if (n=fn_name)
+					 then (params, exprs)
+					 else lookup_defun fn_name dxs
+    | [] -> raise Not_found
+    | _ -> raise (EvalError("Defuns list improperly constructed"))
+  in
+  try
+    let (params, exprs) = lookup_defun fn_name ds in
+    let bindings = List.map2 (fun param arg -> (param, arg)) params args in
+    Let (bindings, exprs)
+  with Not_found -> raise (EvalError("Unknown function call to " ^ fn_name))
+  
+and var_lookup v ns =
+  match ns with
+  | sl::sls -> (try List.assoc v sl
+		with Not_found -> var_lookup v sls)
+  | [] -> raise (EvalError("Unknown reference to variable: " ^ v))
+
+and eval_if_expr e1 e2 e3 ns ds =
+  match (eval_expr e1 ns ds) with
+  | Bool (b) -> if b
+		then eval_expr e2 ns ds
+		else eval_expr e3 ns ds
+  | _ -> raise (EvalError("First expression in IF must be a bool."))
+
+and arith_start_val es =
+  match es with
+  | (Int (i))::exs -> i
+  | _ -> raise (EvalError("Arithmetic ops only applies to Ints"))
+
+and eval_arith_expr f start_val es =
+  Int (List.fold_left
+	 (fun a e -> (match e with
+		      | Int (i) -> f a i
+		      | _ -> raise (EvalError("Arithmetic ops only applies to Ints"))))
+	 start_val es)
+
+and eval_car_expr l =
+  match l with
+  | Lst (es) -> (match es with
+		 | x::xs -> x
+		 | _ -> raise (EvalError("Can only apply 'car' to lists")))
+  | _ -> raise (EvalError("Can only 'car' a list"))
+
+and eval_cdr_expr l =
+  match l with
+  | Lst (es) -> (match es with
+		 | x::xs -> Lst (xs)
+		 | _ -> raise (EvalError("Can only apply 'cdr' to lists")))
+  | _ -> raise (EvalError("Can only 'cdr' a list"))
+
+and eval_expr_lst es ns ds =
+  match es with
+  | x::xs -> (eval_expr x ns ds)::(eval_expr_lst xs ns ds)
+  | [] -> []
+		
+(* Print the tokens read from file. Then build a list of ASTs from the tokens to
+ * allow multiple expressions to be evaluated from one file. Then print the 
+ * AST list. *)
+
+let () = print_list prg;
+	 let expr_lst = build_expr_lst prg in
+	 print_expr_lst 0 expr_lst;
+	 let (defun_lst, exprs) = List.partition
+				    (fun x ->
+				     match x with
+				     | Defun (_, _, _) -> true
+				     | _ -> false)
+				    expr_lst in
+	 print_expr_lst 0 (eval_expr_lst exprs [] defun_lst)
+		
+(* compile with ocaml version 4.02.1:
+ * ocamlbuild -r -tag thread -lib str -use-ocamlfind -pkg core lisp_interp.byte
+ * run as './lisp_interp.byte prog.mylisp'
+ *)
+		
+
+
+

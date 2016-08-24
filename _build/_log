@@ -1,0 +1,8 @@
+### Starting build.
+# Target: lisp_interp.ml.depends, tags: { extension:ml, file:lisp_interp.ml, ocaml, ocamldep, package(core), quiet, thread, traverse }
+ocamlfind ocamldep -package core -modules lisp_interp.ml > lisp_interp.ml.depends
+# Target: lisp_interp.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:lisp_interp.cmo, file:lisp_interp.ml, implem, ocaml, package(core), quiet, thread, traverse }
+ocamlfind ocamlc -c -thread -package core -o lisp_interp.cmo lisp_interp.ml
+# Target: lisp_interp.byte, tags: { byte, dont_link_with, extension:byte, file:lisp_interp.byte, link, ocaml, package(core), program, quiet, thread, traverse }
+ocamlfind ocamlc str.cma -linkpkg -thread -package core lisp_interp.cmo -o lisp_interp.byte
+# Compilation successful.

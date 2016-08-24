@@ -1,0 +1,19 @@
+(+ 3 4 (+ 6 7) (+ -1 -2))
+
+(- 3 4 (+ 6 7) (+ -1 -2))
+
+(/ 33 11)
+
+(= 3 (+ 1 2) (/ 3 1))
+
+(if (= 3 (some 1 2)) (some 4 5) (fib 7))
+
+(let ((x 2) (y (+ 3 3))) (some y x))
+
+(defun some (boy girl)
+  (+ boy girl))	 
+
+(defun fib (n)
+  (if (= n 0) 1 (if (= n 1) 1 (+ (fib (- n 1)) (fib (- n 2))))))
+
+(fib 1)
